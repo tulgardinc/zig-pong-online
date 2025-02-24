@@ -1,25 +1,28 @@
 const std = @import("std");
 
-fn test_fn(comptime x: u64) [*]u8 {
-    comptime var val: []const u8 = &[0]u8{};
-    inline for (0..x) |_| {
-        val = val ++ .{0};
-    }
-    return val;
+fn ProtocolBuffer(comptime T: type, comptime len: comptime_int) type {
+    return struct {
+        const ProtocolBuffer: void = undefined;
+
+        populated: u32,
+        buffer: [len]T,
+
+        const Self = @This();
+
+        pub fn add(self: *Self, item: T) void {
+            self.buffer[self.populated] = item;
+            self.populated += 1;
+        }
+
+        pub fn reset(self: *Self) void {
+            self.buffer = undefined;
+            self.populated = 0;
+        }
+    };
 }
 
-const Testing = struct {
-    size: comptime_int,
-
-    fn init(val: comptime_int) Testing {
-        return .{ .size = val };
-    }
-
-    fn gen(self: *const Testing) [self.size]u8 {
-        return [_]u8{0} ** self.size;
-    }
-};
-
 test "array_size" {
-    std.debug.print("{any}", .{Testing.init(5).gen()});
+    const pb = ProtocolBuffer(u8, 5){ .populated = 0, .buffer = .{ 0, 0, 0, 0, 0 } };
+
+    @compileLog(@hasDecl(@TypeOf(pb), "Prot"));
 }

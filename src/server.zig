@@ -3,7 +3,7 @@ const ws2_32 = std.os.windows.ws2_32;
 const protocol = @import("protocol.zig");
 
 pub const SERVER_PORT = 12345;
-const BUFF_SIZE = 1024;
+const BUFF_SIZE = 4096;
 
 pub fn run() !void {
     var buffer: [BUFF_SIZE]u8 = undefined;
@@ -56,7 +56,15 @@ pub fn run() !void {
         // const player_info = protocol.PlayerInfo{
         // };
 
-        std.debug.print("received player with name: {s} at: {}, {}\n", .{buffer[0..@intCast(bytes_recv)]});
+        var player_info: protocol.PlayerInfo = undefined;
+        protocol.deserialize(&player_info, &buffer);
+
+        std.debug.print("{s}, pos: {d}, {d} id: {d}\n", .{
+            player_info.buffer.get_filled_slice(),
+            player_info.pos.x,
+            player_info.pos.y,
+            player_info.id,
+        });
 
         // result = std.os.windows.sendto(
         //     sockfd,

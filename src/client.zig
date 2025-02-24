@@ -1,14 +1,23 @@
 const std = @import("std");
 const server = @import("server.zig");
+const protocol = @import("protocol.zig");
 
 const ws2_32 = std.os.windows.ws2_32;
 
-const BUFF_SIZE = 1024;
+//const BUFF_SIZE = 1024;
+
+var player_info = protocol.PlayerInfo{
+    .buffer = .{},
+    .id = 0,
+    .pos = .{
+        .x = 10,
+        .y = 20,
+    },
+};
 
 pub fn run() !void {
-    var buffer: [BUFF_SIZE]u8 = [_]u8{0} ** BUFF_SIZE;
     const reader = std.io.getStdIn().reader();
-    var buffer_stream = std.io.fixedBufferStream(&buffer);
+    var buffer_stream = std.io.fixedBufferStream(&player_info.buffer.buffer);
 
     var result: i32 = 0;
 
@@ -37,13 +46,18 @@ pub fn run() !void {
 
     while (true) {
         try reader.streamUntilDelimiter(buffer_stream.writer(), '\n', null);
-        defer buffer_stream.reset();
-        const written = buffer_stream.getWritten();
+        defer {
+            buffer_stream.reset();
+            player_info.buffer.populated = 0;
+        }
+        player_info.buffer.populated = @intCast(try buffer_stream.getPos() - 1);
+
+        const buffer = protocol.serialize(player_info);
 
         result = ws2_32.sendto(
             socketfd,
-            @ptrCast(written),
-            @intCast(written.len),
+            @ptrCast(&buffer),
+            @intCast(buffer.len),
             0,
             @ptrCast(&server_addr),
             @sizeOf(ws2_32.sockaddr),
@@ -53,14 +67,14 @@ pub fn run() !void {
             continue;
         }
 
-        while (true) {
-            result = ws2_32.recv(socketfd, @ptrCast(&buffer), @intCast(BUFF_SIZE), 0);
-            if (result == ws2_32.SOCKET_ERROR) {
-                std.debug.print("failed recv: {}\n", .{ws2_32.WSAGetLastError()});
-                break;
-            }
-            std.debug.print("received: {s}\n", .{buffer[0..@intCast(result)]});
-            break;
-        }
+        // while (true) {
+        //     result = ws2_32.recv(socketfd, @ptrCast(&buffer), @intCast(BUFF_SIZE), 0);
+        //     if (result == ws2_32.SOCKET_ERROR) {
+        //         std.debug.print("failed recv: {}\n", .{ws2_32.WSAGetLastError()});
+        //         break;
+        //     }
+        //     std.debug.print("received: {s}\n", .{buffer[0..@intCast(result)]});
+        //     break;
+        // }
     }
 }

@@ -5,10 +5,14 @@ const r = @cImport({
 
 const native_endian = @import("builtin").target.cpu.arch.endian();
 
-fn ProtocolBuffer(comptime T: type, comptime len: comptime_int) type {
+const BUFFER_LENGTH_TYPE = u16;
+
+pub fn ProtocolBuffer(comptime T: type, comptime len: comptime_int) type {
     return struct {
-        populated: u32,
-        buffer: [len]T,
+        const ProtocolBuffer: void = undefined;
+
+        populated: BUFFER_LENGTH_TYPE = 0,
+        buffer: [len]T = undefined,
 
         const Self = @This();
 
@@ -20,6 +24,10 @@ fn ProtocolBuffer(comptime T: type, comptime len: comptime_int) type {
         pub fn reset(self: *Self) void {
             self.buffer = undefined;
             self.populated = 0;
+        }
+
+        pub fn get_filled_slice(self: *const Self) []const u8 {
+            return self.buffer[0..self.populated];
         }
     };
 }
@@ -62,8 +70,16 @@ fn get_serialization_size(sum: comptime_int, data_type: type) comptime_int {
 
     switch (object_info) {
         .@"struct" => {
-            inline for (object_info.@"struct".fields) |field| {
-                cur_sum += get_serialization_size(0, field.type);
+            if (@hasField(data_type, "ProtocolBuffer")) {
+                cur_sum += @sizeOf(BUFFER_LENGTH_TYPE);
+                const buffer = @field(data_type, "buffer");
+                const buffer_len = @typeInfo(@TypeOf(buffer)).array.len;
+                const item_type = @typeInfo(@TypeOf(buffer)).array.child;
+                cur_sum += get_serialization_size(0, item_type) * buffer_len;
+            } else {
+                inline for (object_info.@"struct".fields) |field| {
+                    cur_sum += get_serialization_size(0, field.type);
+                }
             }
         },
         .pointer => {
@@ -75,33 +91,6 @@ fn get_serialization_size(sum: comptime_int, data_type: type) comptime_int {
     }
 
     return cur_sum;
-}
-
-fn struct_array_rep_size(comptime sum: u32, comptime fields: []const std.builtin.Type.StructField) comptime_int {
-    comptime {
-        var current_sum = sum;
-
-        for (fields) |field| {
-            const field_type = field.type;
-            const field_type_info = @typeInfo(field_type);
-            switch (field_type_info) {
-                .@"struct" => {
-                    const inner_fields = field_type_info.@"struct".fields;
-                    current_sum += struct_array_rep_size(current_sum, inner_fields);
-                },
-                .int, .float => {
-                    current_sum += @sizeOf(field_type);
-                },
-                .array => {
-                    current_sum += @sizeOf(field_type);
-                },
-                .pointer => {},
-                else => @compileError("Wrong type of field"),
-            }
-        }
-
-        return current_sum;
-    }
 }
 
 fn serialize_numeric(numeric: anytype, buffer: []u8) void {
@@ -160,30 +149,39 @@ fn serialize_data(slice: []u8, index: u32, object: anytype) void {
             cur_index += object_size;
         },
         .@"struct" => {
-            const fields = object_type_info.@"struct".fields;
-
-            inline for (fields) |field| {
-                serialize_data(
-                    slice,
-                    cur_index,
-                    @field(object, field.name),
+            if (@hasDecl(object_type, "ProtocolBuffer")) {
+                serialize_numeric(
+                    @field(object, "populated"),
+                    slice[cur_index .. cur_index + @sizeOf(BUFFER_LENGTH_TYPE)],
                 );
-                cur_index += get_serialization_size(0, field.type);
-            }
-        },
-        .array => {
-            const child_type = object_type_info.array.child;
+                cur_index += @sizeOf(BUFFER_LENGTH_TYPE);
+                const buffer = @field(object, "buffer");
+                const buffer_type = @TypeOf(buffer);
+                const item_type = @typeInfo(buffer_type).array.child;
+                const item_size = get_serialization_size(0, item_type);
 
-            for (object) |num| {
-                serialize_data(slice, cur_index, num);
-                cur_index += get_serialization_size(0, child_type);
+                for (buffer) |num| {
+                    serialize_data(slice, cur_index, num);
+                    cur_index += item_size;
+                }
+            } else {
+                const fields = object_type_info.@"struct".fields;
+
+                inline for (fields) |field| {
+                    serialize_data(
+                        slice,
+                        cur_index,
+                        @field(object, field.name),
+                    );
+                    cur_index += get_serialization_size(0, field.type);
+                }
             }
         },
         .pointer => {
             serialize_data(slice, cur_index, object.*);
         },
         else => {
-            @compileError("Type" ++ object_type ++ "not supported");
+            @compileError("Type not supported");
         },
     }
 }
@@ -227,21 +225,49 @@ fn deserialize_data(target: anytype, data: []const u8, index: u32) void {
     const target_info = @typeInfo(target_type);
 
     if (target_info != .pointer) @compileError("should be called with a pointer");
-    const child_info = @typeInfo(target_info.pointer.child);
+    const child_type = target_info.pointer.child;
+    const child_info = @typeInfo(child_type);
     const child_size = get_serialization_size(0, target_info.pointer.child);
 
     switch (child_info) {
         .@"struct" => {
-            const fields = child_info.@"struct".fields;
+            if (@hasDecl(child_type, "ProtocolBuffer")) {
+                var length_as_array: [@sizeOf(BUFFER_LENGTH_TYPE)]u8 = undefined;
+                @memcpy(&length_as_array, data[cur_index .. cur_index + @sizeOf(BUFFER_LENGTH_TYPE)]);
 
-            inline for (fields) |field| {
-                const field_size = get_serialization_size(0, field.type);
-                deserialize_data(
-                    &@field(target, field.name),
-                    data,
-                    cur_index,
+                @field(target, "populated") = std.mem.readInt(
+                    BUFFER_LENGTH_TYPE,
+                    &length_as_array,
+                    native_endian,
                 );
-                cur_index += field_size;
+
+                deserialize_numeric(
+                    data[cur_index .. cur_index + @sizeOf(BUFFER_LENGTH_TYPE)],
+                    &@field(target, "populated"),
+                );
+
+                cur_index += @sizeOf(BUFFER_LENGTH_TYPE);
+                const buffer = &@field(target, "buffer");
+                const buffer_type = @TypeOf(buffer.*);
+                const item_type = @typeInfo(buffer_type).array.child;
+                const el_size = get_serialization_size(0, item_type);
+
+                for (buffer) |*el| {
+                    deserialize_data(el, data, cur_index);
+                    cur_index += el_size;
+                }
+            } else {
+                const fields = child_info.@"struct".fields;
+
+                inline for (fields) |field| {
+                    const field_size = get_serialization_size(0, field.type);
+                    deserialize_data(
+                        &@field(target, field.name),
+                        data,
+                        cur_index,
+                    );
+                    cur_index += field_size;
+                }
             }
         },
         .int, .float => {
@@ -251,76 +277,10 @@ fn deserialize_data(target: anytype, data: []const u8, index: u32) void {
             );
             cur_index += child_size;
         },
-        .array => {
-            for (target) |*el| {
-                const el_size = get_serialization_size(0, child_info.array.child);
-                deserialize_data(
-                    el,
-                    data,
-                    cur_index,
-                );
-                cur_index += el_size;
-            }
-        },
         .pointer => {
             deserialize_data(target.*, data, cur_index);
         },
         else => @compileError("unsuported type"),
-    }
-}
-
-fn deserialize_to_struct(struct_to_fill: anytype, data: []const u8, index: u32) void {
-    var cur_index = index;
-
-    const ptr_type = @typeInfo(@TypeOf(struct_to_fill)).pointer;
-    const struct_type = @typeInfo(ptr_type.child).@"struct";
-
-    inline for (struct_type.fields) |field| {
-        const field_type = field.type;
-        const field_type_info = @typeInfo(field_type);
-        switch (field_type_info) {
-            .float, .int => {
-                if (@sizeOf(field_type) > 1) {
-                    @field(struct_to_fill, field.name) = deserialize_numeric(
-                        data[cur_index .. cur_index + @sizeOf(field_type)],
-                        field_type,
-                    );
-                } else {
-                    @field(struct_to_fill, field.name) = @bitCast(data[cur_index]);
-                }
-                cur_index += @sizeOf(field_type);
-            },
-            .@"struct" => {
-                const inner_struct_to_fill = &@field(struct_to_fill, field.name);
-                const size = struct_array_rep_size(
-                    0,
-                    field_type_info.@"struct".fields,
-                );
-                deserialize_to_struct(
-                    inner_struct_to_fill,
-                    data,
-                    cur_index,
-                );
-                cur_index += size;
-            },
-            .array => {
-                const slice = data[cur_index .. cur_index + @sizeOf(field_type)];
-
-                const child_info = @typeInfo(field_type_info.array.child);
-                const child_size = @sizeOf(field_type_info.array.child);
-
-                if (child_info == .int or child_info == .float) {
-                    for (1..(slice.len / child_size)) |i| {
-                        @field(struct_to_fill, field.name)[i] = @bitCast(deserialize_numeric(
-                            slice[(i - 1) * child_size .. i * child_size],
-                            field_type_info.array.child,
-                        ));
-                    }
-                }
-                cur_index += @sizeOf(field_type);
-            },
-            else => @compileError("Field type not supported"),
-        }
     }
 }
 
@@ -337,7 +297,7 @@ pub const Vector2 = struct { x: f32, y: f32 };
 pub const PlayerInfo = struct {
     pos: Vector2,
     id: i32,
-    list: [4]u16,
+    buffer: ProtocolBuffer(u8, 20),
 };
 
 test "serialize" {
@@ -347,8 +307,13 @@ test "serialize" {
             .y = 20,
         },
         .id = 100,
-        .list = .{ 1, 2, 3, 4 },
+        .buffer = .{},
     };
+
+    player_info.buffer.add(1);
+    player_info.buffer.add(2);
+    player_info.buffer.add(3);
+    player_info.buffer.add(4);
 
     const serialized = serialize(&player_info);
 
@@ -362,8 +327,13 @@ test "deserialize" {
             .y = 20,
         },
         .id = 100,
-        .list = .{ 1, 2, 3, 4 },
+        .buffer = .{},
     };
+
+    player_info.buffer.add(1);
+    player_info.buffer.add(2);
+    player_info.buffer.add(3);
+    player_info.buffer.add(4);
 
     const serialized = serialize(&player_info);
 
@@ -373,9 +343,9 @@ test "deserialize" {
     std.debug.print("\n{any}\n", .{deserialized});
 }
 
-test "type" {
-    const buffer1 = ProtocolBuffer(u8, 10);
-    //const buffer2 = ProtocolBuffer(u16, 15);
+// test "type" {
+//     const buffer1 = ProtocolBuffer(u8, 10);
+//     //const buffer2 = ProtocolBuffer(u16, 15);
 
-    try std.testing.expect(@TypeOf(buffer1) == @TypeOf(ProtocolBuffer(u8, 0)));
-}
+//     try std.testing.expect(@TypeOf(buffer1) == @TypeOf(ProtocolBuffer(f32, 0)));
+// }
