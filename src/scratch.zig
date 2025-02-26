@@ -1,28 +1,18 @@
 const std = @import("std");
 
-fn ProtocolBuffer(comptime T: type, comptime len: comptime_int) type {
-    return struct {
-        const ProtocolBuffer: void = undefined;
-
-        populated: u32,
-        buffer: [len]T,
-
-        const Self = @This();
-
-        pub fn add(self: *Self, item: T) void {
-            self.buffer[self.populated] = item;
-            self.populated += 1;
-        }
-
-        pub fn reset(self: *Self) void {
-            self.buffer = undefined;
-            self.populated = 0;
-        }
-    };
+test "enum" {
+    const data = [_]u8{ 65, 32, 0, 0 };
+    const slice = data[0..];
+    const int_rep: *const u32 = @alignCast(@ptrCast(slice.ptr));
+    const swaped = @byteSwap(int_rep.*);
+    const float: f32 = @bitCast(swaped);
+    std.debug.print("\n{d}\n", .{float});
 }
 
-test "array_size" {
-    const pb = ProtocolBuffer(u8, 5){ .populated = 0, .buffer = .{ 0, 0, 0, 0, 0 } };
-
-    @compileLog(@hasDecl(@TypeOf(pb), "Prot"));
-}
+// pub fn main() !void {
+//     comptime var slice: []const u8 = &[0]u8{};
+//     slice = slice ++ [1]u8{1};
+//     slice = slice ++ &[1]u8{2};
+//     slice = slice ++ .{3};
+//     std.debug.print("{any}\n", .{slice});
+// }

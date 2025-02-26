@@ -1,24 +1,43 @@
 const std = @import("std");
 const server = @import("server.zig");
 const protocol = @import("protocol.zig");
+const serializer = @import("serializer.zig");
+const game = @import("game/game.zig");
+const r = @cImport({
+    @cInclude("raylib.h");
+    @cInclude("raymath.h");
+});
 
 const ws2_32 = std.os.windows.ws2_32;
 
-//const BUFF_SIZE = 1024;
+const CLIENT_TICK_RATE = 60;
+const TICK_TIME_MCS: i64 = 1000000 / CLIENT_TICK_RATE;
 
-var player_info = protocol.PlayerInfo{
-    .buffer = .{},
-    .id = 0,
-    .pos = .{
-        .x = 10,
-        .y = 20,
-    },
-};
+var buffer: [BUFF_SIZE]u8 = undefined;
+
+const BUFF_SIZE = 4096;
+
+pub var game_state_buffer: game.GameStateSnapshot = undefined;
+
+pub const ServerMessageQueue = std.fifo.LinearFifo(protocol.ServerMessage, .{ .Static = 2048 });
+pub var server_message_queue: ServerMessageQueue = ServerMessageQueue.init();
+
+pub const GameStateQueue = std.fifo.LinearFifo(game.GameStateSnapshot, .{ .Static = 2048 });
+pub var game_state_queue: GameStateQueue = GameStateQueue.init();
+
+pub var active = false;
 
 pub fn run() !void {
-    const reader = std.io.getStdIn().reader();
-    var buffer_stream = std.io.fixedBufferStream(&player_info.buffer.buffer);
+    _ = try std.Thread.spawn(.{}, run_network, .{ &game_state_buffer, &game_state_queue, &active });
+    try game.run_game(
+        &game_state_buffer,
+        &server_message_queue,
+        &game_state_queue,
+        &active,
+    );
+}
 
+fn run_network(game_state_ptr: *game.GameStateSnapshot, game_state_queue_ptr: *GameStateQueue, active_ptr: *bool) !void {
     var result: i32 = 0;
 
     _ = try std.os.windows.WSAStartup(2, 2);
@@ -34,47 +53,66 @@ pub fn run() !void {
         .addr = ws2_32.inet_addr("127.0.0.1"),
     };
 
-    const client_addr = ws2_32.sockaddr.in{
-        .family = ws2_32.AF.INET,
-        .port = 0,
-        .addr = ws2_32.inet_addr("0.0.0.0"),
-    };
-
-    result = ws2_32.bind(socketfd, @ptrCast(&client_addr), @sizeOf(ws2_32.sockaddr));
+    result = ws2_32.connect(socketfd, @ptrCast(&server_addr), @sizeOf(ws2_32.sockaddr));
     defer _ = ws2_32.closesocket(socketfd);
     if (result != 0) return;
 
-    while (true) {
-        try reader.streamUntilDelimiter(buffer_stream.writer(), '\n', null);
-        defer {
-            buffer_stream.reset();
-            player_info.buffer.populated = 0;
-        }
-        player_info.buffer.populated = @intCast(try buffer_stream.getPos() - 1);
+    var next_tick = std.time.microTimestamp();
 
-        const buffer = protocol.serialize(player_info);
+    var message: protocol.ClientMessage = undefined;
+
+    while (true) {
+        const select_timeout = next_tick - std.time.microTimestamp();
+        if (select_timeout > 0) {
+            var fd_set: ws2_32.fd_set = undefined;
+            fd_set.fd_array[0] = socketfd;
+            fd_set.fd_count = 1;
+            const socket_activity = ws2_32.select(0, &fd_set, null, null, &.{ .sec = 0, .usec = @intCast(select_timeout) });
+            if (socket_activity > 0) {
+                result = ws2_32.recv(socketfd, @ptrCast(&buffer), @intCast(BUFF_SIZE), 0);
+                if (result == ws2_32.SOCKET_ERROR) {
+                    std.debug.print("failed recv: {}\n", .{ws2_32.WSAGetLastError()});
+                    break;
+                }
+
+                var server_message: protocol.ServerMessage = undefined;
+                serializer.deserialize(&server_message, buffer[0..@intCast(result)]);
+
+                std.debug.print("received stamp: {}\n", .{server_message.stamp});
+
+                if (server_message.response == 1) {
+                    active_ptr.* = true;
+                } else if (active_ptr.*) {
+                    try server_message_queue.writeItem(server_message);
+                }
+
+                continue;
+            }
+        }
+
+        // ticking
+
+        next_tick = std.time.microTimestamp() + TICK_TIME_MCS;
+
+        message.input = game_state_ptr.input;
+        message.stamp = std.time.microTimestamp();
+        const client_message_serialized = serializer.serialize(&message);
 
         result = ws2_32.sendto(
             socketfd,
-            @ptrCast(&buffer),
-            @intCast(buffer.len),
+            @ptrCast(&client_message_serialized),
+            @intCast(client_message_serialized.len),
             0,
             @ptrCast(&server_addr),
-            @sizeOf(ws2_32.sockaddr),
+            @sizeOf(ws2_32.sockaddr.in),
         );
         if (result == ws2_32.SOCKET_ERROR) {
             std.debug.print("failed sendto: {}\n", .{ws2_32.WSAGetLastError()});
             continue;
         }
 
-        // while (true) {
-        //     result = ws2_32.recv(socketfd, @ptrCast(&buffer), @intCast(BUFF_SIZE), 0);
-        //     if (result == ws2_32.SOCKET_ERROR) {
-        //         std.debug.print("failed recv: {}\n", .{ws2_32.WSAGetLastError()});
-        //         break;
-        //     }
-        //     std.debug.print("received: {s}\n", .{buffer[0..@intCast(result)]});
-        //     break;
-        // }
+        if (active_ptr.* and game_state_ptr.stamp != 0) {
+            try game_state_queue_ptr.writeItem(game_state_ptr.*);
+        }
     }
 }

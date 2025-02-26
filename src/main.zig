@@ -1,6 +1,7 @@
 const std = @import("std");
 const server = @import("server.zig");
 const client = @import("client.zig");
+const game = @import("game/game.zig");
 
 const r = @cImport({
     @cInclude("raylib.h");
@@ -16,8 +17,6 @@ pub fn main() !void {
     defer args.deinit();
 
     _ = args.skip();
-
-    //std.debug.print("{s}\n", .{args.next().?});
 
     const first_arg = args.next() orelse {
         std.debug.print("needs arguments\n", .{});
