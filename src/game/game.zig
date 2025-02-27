@@ -41,10 +41,12 @@ pub const GameStateSnapshot = struct {
     stamp: i64,
 };
 
-var previous_other_player_position: ?r.Vector2 = null;
-var new_other_player_position: ?r.Vector2 = null;
+var server_other_player_position: ?r.Vector2 = null;
+var server_ball_position = initial_ball.pos;
 
 var interpolation_start_time_mcs: i64 = 0;
+
+var positions_set = false;
 
 pub fn run_game(
     game_state_buffer_ptr: *GameStateSnapshot,
@@ -52,6 +54,7 @@ pub fn run_game(
     game_state_queue_ptr: *client.GameStateQueue,
     active_ptr: *bool,
 ) !void {
+    r.SetTraceLogLevel(r.LOG_ERROR);
     r.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Pong");
     defer r.CloseWindow();
 
@@ -82,30 +85,38 @@ pub fn run_game(
 
     while (!r.WindowShouldClose()) {
         if (server_message_queue_ptr.readableLength() > 0 and game_state_queue_ptr.readableLength() > 0) {
-            std.debug.print("receiving data\n", .{});
 
             // handle positioning and correction
             const server_message = server_message_queue_ptr.readItem().?;
 
+            if (!positions_set) {
+                if (server_message.player == 1) {
+                    player.pos = PLAYER_2_STARTING_POSITION;
+                    other_player.pos = PLAYER_1_STARTING_POSITION;
+                }
+                positions_set = true;
+            }
+
             // entity interpolation
-            previous_other_player_position = other_player.pos;
-            new_other_player_position = server_message.other_player_pos;
+            server_other_player_position = server_message.other_player_pos;
             interpolation_start_time_mcs = std.time.microTimestamp();
 
             // reconsiliation
-            var game_state_record: GameStateSnapshot = game_state_queue_ptr.readItem().?;
-            std.debug.print("\nstate_stamp: {}, server_stamp: {}\n", .{ game_state_record.stamp, server_message.stamp });
-            while (game_state_record.stamp != server_message.stamp) {
-                game_state_record = game_state_queue_ptr.readItem().?;
+            if (server_message.stamp != 0) {
+                var game_state_record: GameStateSnapshot = game_state_queue_ptr.readItem().?;
+                while (game_state_record.stamp != server_message.stamp) {
+                    game_state_record = game_state_queue_ptr.readItem() orelse @panic("no state left");
+                }
             }
 
             player.pos = server_message.player_pos;
-            ball.pos = server_message.ball_pos;
+            server_ball_position = server_message.ball_pos;
             for (game_state_queue_ptr.readableSlice(0)) |*snapshot_ptr| {
-                const player_vel = r.Vector2Scale(consts.VEC_UP, snapshot_ptr.input * server.TICK_DURATION_S);
+                const input_float: f32 = @floatFromInt(snapshot_ptr.input);
+                const player_vel = r.Vector2Scale(consts.VEC_UP, input_float * (server.TICK_DURATION_S));
                 player.pos = r.Vector2Add(player.pos, player_vel);
                 const ball_vel = r.Vector2Scale(snapshot_ptr.ball_dir, Ball.BALL_SPEED * server.TICK_DURATION_S);
-                ball.pos = r.Vector2Add(ball.pos, ball_vel);
+                server_ball_position = r.Vector2Add(server_ball_position, ball_vel);
             }
         }
 
@@ -117,18 +128,24 @@ pub fn run_game(
 
             player.update(game_state_buffer_ptr);
 
-            if (previous_other_player_position) |prev_pos| {
-                other_player.pos = r.Vector2Lerp(
-                    prev_pos,
-                    new_other_player_position.?,
-                    @floatFromInt(@divFloor(
-                        (std.time.microTimestamp() - interpolation_start_time_mcs),
-                        server.TICK_DURATION_MCS,
-                    )),
+            if (server_other_player_position) |other_pos| {
+                other_player.pos = r.Vector2MoveTowards(
+                    other_player.pos,
+                    other_pos,
+                    Player.PLAYER_SPEED * r.GetFrameTime(),
                 );
             }
 
-            ball.update(collisions);
+            ball.update(collisions, r.GetFrameTime());
+
+            const ball_dist = r.Vector2Distance(ball.pos, server_ball_position);
+            if (ball_dist > 0.05) {
+                ball.pos = r.Vector2MoveTowards(
+                    ball.pos,
+                    server_ball_position,
+                    std.math.pow(f32, ball_dist, 2) * r.GetFrameTime(),
+                );
+            }
 
             game_state_buffer_ptr.stamp = std.time.microTimestamp();
             game_state_buffer_ptr.ball_pos = ball.pos;

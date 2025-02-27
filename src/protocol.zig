@@ -14,5 +14,5 @@ pub const ServerMessage = struct {
     other_player_pos: r.Vector2 = r.Vector2Zero(),
     ball_pos: r.Vector2 = r.Vector2Zero(),
     ball_dir: r.Vector2 = r.Vector2Zero(),
-    response: u1,
+    player: u1,
 };

@@ -16,15 +16,15 @@ speed: f32,
 
 const Self = @This();
 
-pub fn update(self: *Self, player_aabb_ptrs: [2]*const AABB) void {
-    self.move();
+pub fn update(self: *Self, player_aabb_ptrs: [2]*const AABB, frame_time: f32) void {
+    self.move(frame_time);
     self.handleCollision(player_aabb_ptrs);
 }
 
-fn move(self: *Self) void {
+fn move(self: *Self, frame_time: f32) void {
     const vel = r.Vector2Scale(
         self.dir,
-        self.speed * r.GetFrameTime(),
+        self.speed * frame_time,
     );
     self.pos = r.Vector2Add(self.pos, vel);
 }

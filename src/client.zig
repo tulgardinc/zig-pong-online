@@ -78,13 +78,12 @@ fn run_network(game_state_ptr: *game.GameStateSnapshot, game_state_queue_ptr: *G
                 var server_message: protocol.ServerMessage = undefined;
                 serializer.deserialize(&server_message, buffer[0..@intCast(result)]);
 
-                std.debug.print("received stamp: {}\n", .{server_message.stamp});
-
-                if (server_message.response == 1) {
-                    active_ptr.* = true;
-                } else if (active_ptr.*) {
+                //std.debug.print("received stamp: {}\n", .{server_message.stamp});
+                if (active_ptr.*) {
                     try server_message_queue.writeItem(server_message);
                 }
+
+                active_ptr.* = true;
 
                 continue;
             }
@@ -94,8 +93,10 @@ fn run_network(game_state_ptr: *game.GameStateSnapshot, game_state_queue_ptr: *G
 
         next_tick = std.time.microTimestamp() + TICK_TIME_MCS;
 
-        message.input = game_state_ptr.input;
-        message.stamp = std.time.microTimestamp();
+        const game_state_snapshot = game_state_ptr.*;
+
+        message.input = game_state_snapshot.input;
+        message.stamp = game_state_snapshot.stamp;
         const client_message_serialized = serializer.serialize(&message);
 
         result = ws2_32.sendto(
@@ -111,8 +112,12 @@ fn run_network(game_state_ptr: *game.GameStateSnapshot, game_state_queue_ptr: *G
             continue;
         }
 
-        if (active_ptr.* and game_state_ptr.stamp != 0) {
-            try game_state_queue_ptr.writeItem(game_state_ptr.*);
+        if (active_ptr.*) {
+            game_state_queue_ptr.writeItem(game_state_snapshot) catch |err| {
+                std.debug.panic("failed to add to queue: {}\n", .{err});
+            };
         }
     }
 }
+
+const a = std.Thread.Mutex{};

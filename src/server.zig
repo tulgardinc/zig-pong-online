@@ -11,15 +11,15 @@ pub const SERVER_PORT = 12345;
 const BUFF_SIZE = 4096;
 
 const SERVER_TICK_RATE = 60;
-pub const TICK_DURATION_MCS = 1000000 / SERVER_TICK_RATE;
-pub const TICK_DURATION_S = 1 / SERVER_TICK_RATE;
+pub const TICK_DURATION_MCS: i64 = 1000000 / SERVER_TICK_RATE;
+pub const TICK_DURATION_S = 1.0 / @as(comptime_float, @floatFromInt(SERVER_TICK_RATE));
 
 const ClientMessageWrapper = struct {
-    id: u64,
+    id: u32,
     message: protocol.ClientMessage,
 };
 
-const ClientMessageQueue = std.fifo.LinearFifo(protocol.ClientMessage, .{ .Static = 2048 });
+const ClientMessageQueue = std.fifo.LinearFifo(ClientMessageWrapper, .{ .Static = 2048 });
 
 pub fn run() !void {
     var buffer: [BUFF_SIZE]u8 = undefined;
@@ -68,7 +68,7 @@ pub fn run() !void {
     var cli_addr = std.mem.zeroes(ws2_32.sockaddr);
     var sockaddr_len: ws2_32.socklen_t = @sizeOf(ws2_32.sockaddr.in);
 
-    var next_tick = std.time.microTimestamp();
+    var next_tick_mcs = std.time.microTimestamp();
 
     var select_timeval: ws2_32.timeval = undefined;
     select_timeval.sec = 0;
@@ -76,11 +76,8 @@ pub fn run() !void {
     var player1_addr = std.mem.zeroes(ws2_32.sockaddr);
     var player2_addr = std.mem.zeroes(ws2_32.sockaddr);
 
-    var message_to_p1: protocol.ServerMessage = undefined;
-    var message_to_p2: protocol.ServerMessage = undefined;
-
     while (true) {
-        const select_timeout = next_tick - std.time.microTimestamp();
+        const select_timeout = next_tick_mcs - std.time.microTimestamp();
         if (select_timeout > 0) {
             var fd_set: ws2_32.fd_set = undefined;
             fd_set.fd_array[0] = sockfd;
@@ -112,76 +109,86 @@ pub fn run() !void {
 
                 const cli_casted: ws2_32.sockaddr.in = @bitCast(cli_addr);
 
-                var player_to_process_ptr: *OtherPlayer = &player1;
-                var message_to_process_ptr: *protocol.ServerMessage = &message_to_p1;
-
                 const incoming_id = @byteSwap(cli_casted.addr) + @byteSwap(cli_casted.port);
                 if (player1.id == null) {
                     player1.id = incoming_id;
                     std.debug.print("Player 1 connected id {any}\n", .{player1.id});
                     player1_addr = cli_addr;
-                    message_to_p1.response = 1;
                 } else if (incoming_id != player1.id.?) {
                     if (player2.id == null) {
                         player2.id = incoming_id;
                         std.debug.print("Player 2 connected id {any}\n", .{player2.id});
                         player2_addr = cli_addr;
-                        message_to_p2.response = 1;
                     }
-                    player_to_process_ptr = &player2;
                 }
 
-                if (player1.id == incoming_id) {
-                    std.debug.print("received: {} from p1\n", .{client_message.stamp});
-                } else {
-                    std.debug.print("received: {} from p2\n", .{client_message.stamp});
-                }
-
-                player_to_process_ptr.input = client_message.input;
-                message_to_process_ptr.stamp = client_message.stamp;
+                try client_message_queue.writeItem(.{
+                    .id = incoming_id,
+                    .message = client_message,
+                });
 
                 continue;
             }
         }
 
-        next_tick = std.time.microTimestamp() + TICK_DURATION_MCS;
+        next_tick_mcs = std.time.microTimestamp() + TICK_DURATION_MCS;
 
         // simulate
         // only start sending when both players are connected
         if (player1.id == null or player2.id == null) {
-            //std.debug.print("Waiting for players...\n", .{});
             continue;
         }
 
-        player1.update(TICK_DURATION_S);
+        var p1_stamp: i64 = 0;
+        var p2_stamp: i64 = 0;
+
+        while (client_message_queue.readableLength() > 0) {
+            const client_message = client_message_queue.readItem().?;
+            if (client_message.id == player1.id) {
+                player1.input = client_message.message.input;
+                player1.update(TICK_DURATION_S);
+                p1_stamp = client_message.message.stamp;
+            } else {
+                player2.input = client_message.message.input;
+                player2.update(TICK_DURATION_S);
+                p2_stamp = client_message.message.stamp;
+            }
+        }
+
         const player1_aabb = AABB.init(
             &player1.pos,
             Player.PLAYER_WIDTH,
             Player.PLAYER_LENGTH,
         );
-        player2.update(TICK_DURATION_S);
         const player2_aabb = AABB.init(
             &player2.pos,
             Player.PLAYER_WIDTH,
             Player.PLAYER_LENGTH,
         );
 
-        ball.update(.{ &player1_aabb, &player2_aabb });
+        ball.update(.{ &player1_aabb, &player2_aabb }, TICK_DURATION_S);
 
-        message_to_p1.ball_pos = ball.pos;
-        message_to_p1.ball_dir = ball.dir;
-        message_to_p1.player_pos = player1.pos;
-        message_to_p1.other_player_pos = player2.pos;
+        // std.debug.print("ball pos: {}\n", .{ball.pos});
+
+        const message_to_p1 = protocol.ServerMessage{
+            .ball_pos = ball.pos,
+            .ball_dir = ball.dir,
+            .player_pos = player1.pos,
+            .other_player_pos = player2.pos,
+            .stamp = p1_stamp,
+            .player = 0,
+        };
         const p1_buffer = serializer.serialize(message_to_p1);
 
-        message_to_p2.ball_pos = ball.pos;
-        message_to_p1.ball_dir = ball.dir;
-        message_to_p2.player_pos = player2.pos;
-        message_to_p2.other_player_pos = player1.pos;
+        const message_to_p2 = protocol.ServerMessage{
+            .ball_pos = ball.pos,
+            .ball_dir = ball.dir,
+            .player_pos = player2.pos,
+            .other_player_pos = player1.pos,
+            .stamp = p2_stamp,
+            .player = 1,
+        };
         const p2_buffer = serializer.serialize(message_to_p2);
-
-        std.debug.print("sending stamp to p1: {}\n", .{message_to_p1.stamp});
-        std.debug.print("sending stamp to p2: {}\n", .{message_to_p2.stamp});
 
         result = std.os.windows.sendto(
             sockfd,
@@ -208,8 +215,5 @@ pub fn run() !void {
             //std.debug.print("sendto failed: {}\n", .{ws2_32.WSAGetLastError()});
             continue;
         }
-
-        message_to_p1.response = 0;
-        message_to_p2.response = 0;
     }
 }
