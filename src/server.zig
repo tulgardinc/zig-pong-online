@@ -2,10 +2,14 @@ const std = @import("std");
 const ws2_32 = std.os.windows.ws2_32;
 const protocol = @import("protocol.zig");
 const serializer = @import("serializer.zig");
-const OtherPlayer = @import("game/OtherPlayer.zig");
 const Player = @import("game/Player.zig");
 const game = @import("game/game.zig");
 const AABB = @import("game/AABB.zig");
+const Ball = @import("game/Ball.zig");
+const r = @cImport({
+    @cInclude("raylib.h");
+    @cInclude("raymath.h");
+});
 
 pub const SERVER_PORT = 12345;
 const BUFF_SIZE = 4096;
@@ -15,13 +19,19 @@ pub const TICK_DURATION_MCS: i64 = 1000000 / SERVER_TICK_RATE;
 pub const TICK_DURATION_S = 1.0 / @as(comptime_float, @floatFromInt(SERVER_TICK_RATE));
 
 const ClientMessageWrapper = struct {
-    id: u32,
+    id: ?u32,
     message: protocol.ClientMessage,
 };
 
-// TODO: REPLACE ALL OTHERPLAYER WITH PLAYER
-// TODO: ADD SCORE
-// TODO: ADD RESET AFTER GOAL
+const PlayerWrapper = struct {
+    id: ?u32,
+    player: *Player,
+};
+
+// DONE: REPLACE ALL OTHERPLAYER WITH PLAYER
+// DONE: ADD SCORE
+// DONE: ADD RESET AFTER GOAL
+// DONE: RANDOM BALL SPAWN
 // TODO: ADD UI OPTION TO HOST OR JOIN
 // TODO: SPAWN SERVER AS SEPEARTE PROCESS
 
@@ -31,17 +41,21 @@ pub fn run() !void {
     var buffer: [BUFF_SIZE]u8 = undefined;
     var result: i32 = 0;
 
+    var random_engine = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+    const rand = random_engine.random();
+
     var client_message_queue: ClientMessageQueue = ClientMessageQueue.init();
 
-    var ball = game.initial_ball;
+    var game_state = game.GameState{ .server = true, .rand = rand };
+    game_state.ball.dir = game_state.get_random_dir();
 
-    var player1 = OtherPlayer{
-        .pos = game.PLAYER_1_STARTING_POSITION,
-        .input = 0,
+    var player1 = PlayerWrapper{
+        .player = &game_state.player,
+        .id = null,
     };
-    var player2 = OtherPlayer{
-        .pos = game.PLAYER_2_STARTING_POSITION,
-        .input = 0,
+    var player2 = PlayerWrapper{
+        .player = &game_state.other_player,
+        .id = null,
     };
 
     _ = try std.os.windows.WSAStartup(2, 2);
@@ -151,48 +165,50 @@ pub fn run() !void {
         while (client_message_queue.readableLength() > 0) {
             const client_message = client_message_queue.readItem().?;
             if (client_message.id == player1.id) {
-                player1.input = client_message.message.input;
-                player1.update(TICK_DURATION_S);
+                player1.player.update(client_message.message.input, TICK_DURATION_S);
                 p1_stamp = client_message.message.stamp;
             } else {
-                player2.input = client_message.message.input;
-                player2.update(TICK_DURATION_S);
+                player2.player.update(client_message.message.input, TICK_DURATION_S);
                 p2_stamp = client_message.message.stamp;
             }
         }
 
         const player1_aabb = AABB.init(
-            &player1.pos,
+            &player1.player.pos,
             Player.PLAYER_WIDTH,
             Player.PLAYER_LENGTH,
         );
         const player2_aabb = AABB.init(
-            &player2.pos,
+            &player2.player.pos,
             Player.PLAYER_WIDTH,
             Player.PLAYER_LENGTH,
         );
 
-        ball.update(.{ &player1_aabb, &player2_aabb }, TICK_DURATION_S);
-
-        // std.debug.print("ball pos: {}\n", .{ball.pos});
+        game_state.ball.update(&game_state, .{ &player1_aabb, &player2_aabb }, TICK_DURATION_S);
 
         const message_to_p1 = protocol.ServerMessage{
-            .ball_pos = ball.pos,
-            .ball_dir = ball.dir,
-            .player_pos = player1.pos,
-            .other_player_pos = player2.pos,
+            .ball_pos = game_state.ball.pos,
+            .ball_dir = game_state.ball.dir,
+            .ball_speed = game_state.ball.speed,
+            .player_pos = player1.player.pos,
+            .other_player_pos = player2.player.pos,
             .stamp = p1_stamp,
             .player = 0,
+            .player1_score = game_state.game_score.player1_score,
+            .player2_score = game_state.game_score.player2_score,
         };
         const p1_buffer = serializer.serialize(message_to_p1);
 
         const message_to_p2 = protocol.ServerMessage{
-            .ball_pos = ball.pos,
-            .ball_dir = ball.dir,
-            .player_pos = player2.pos,
-            .other_player_pos = player1.pos,
+            .ball_pos = game_state.ball.pos,
+            .ball_dir = game_state.ball.dir,
+            .ball_speed = game_state.ball.speed,
+            .player_pos = player2.player.pos,
+            .other_player_pos = player1.player.pos,
             .stamp = p2_stamp,
             .player = 1,
+            .player1_score = game_state.game_score.player1_score,
+            .player2_score = game_state.game_score.player2_score,
         };
         const p2_buffer = serializer.serialize(message_to_p2);
 

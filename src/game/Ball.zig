@@ -7,8 +7,9 @@ const game = @import("game.zig");
 const AABB = @import("AABB.zig");
 const consts = @import("constants.zig");
 
-pub const BALL_SPEED = 400;
-pub const BALL_SIZE = 35;
+pub const INITIAL_SPEED = 360;
+pub const SIZE = 35;
+pub const INITIAL_POSITION = r.Vector2{ .x = -SIZE / 2, .y = -SIZE / 2 };
 
 pos: r.Vector2,
 dir: r.Vector2,
@@ -17,9 +18,14 @@ speed: f32,
 
 const Self = @This();
 
-pub fn update(self: *Self, player_aabb_ptrs: [2]*const AABB, frame_time: f32) void {
+pub fn update(
+    self: *Self,
+    game_state: *game.GameState,
+    player_aabb_ptrs: [2]*const AABB,
+    frame_time: f32,
+) void {
     self.move(frame_time);
-    self.handleCollision(player_aabb_ptrs);
+    self.handleCollision(player_aabb_ptrs, game_state);
 }
 
 fn move(self: *Self, frame_time: f32) void {
@@ -30,17 +36,15 @@ fn move(self: *Self, frame_time: f32) void {
     self.pos = r.Vector2Add(self.pos, vel);
 }
 
-fn handleCollision(self: *Self, player_aabb_ptrs: [2]*const AABB) void {
+fn handleCollision(self: *Self, player_aabb_ptrs: [2]*const AABB, game_state: *game.GameState) void {
     const ball_aabb = AABB.init(&self.pos, self.size, self.size);
 
     var correction = r.Vector2Zero();
 
     if (ball_aabb.right > game.SCREEN_WIDTH / 2) {
-        self.dir = r.Vector2Reflect(self.dir, consts.VEC_LEFT);
-        correction = r.Vector2Scale(consts.VEC_LEFT, (ball_aabb.right - game.SCREEN_WIDTH / 2));
+        game_state.score_goal(1);
     } else if (ball_aabb.left < -game.SCREEN_WIDTH / 2) {
-        self.dir = r.Vector2Reflect(self.dir, consts.VEC_RIGHT);
-        correction = r.Vector2Scale(consts.VEC_RIGHT, ball_aabb.left * -1 - game.SCREEN_WIDTH / 2);
+        game_state.score_goal(0);
     } else if (ball_aabb.bottom > game.SCREEN_HEIGHT / 2) {
         self.dir = r.Vector2Reflect(self.dir, consts.VEC_DOWN);
         correction = r.Vector2Scale(consts.VEC_UP, ball_aabb.bottom - game.SCREEN_HEIGHT / 2);
@@ -56,6 +60,7 @@ fn handleCollision(self: *Self, player_aabb_ptrs: [2]*const AABB) void {
             const normal = r.Vector2Normalize(vec);
             self.dir = r.Vector2Reflect(self.dir, normal);
             self.pos = r.Vector2Add(self.pos, vec);
+            self.speed = self.speed * 1.1;
         }
     }
 }

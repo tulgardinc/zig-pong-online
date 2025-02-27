@@ -22,14 +22,15 @@ pub var game_state_buffer: game.GameStateSnapshot = undefined;
 pub const ServerMessageQueue = std.fifo.LinearFifo(protocol.ServerMessage, .{ .Static = 2048 });
 pub var server_message_queue: ServerMessageQueue = ServerMessageQueue.init();
 
-pub const GameStateQueue = std.fifo.LinearFifo(game.GameStateSnapshot, .{ .Static = 2048 });
-pub var game_state_queue: GameStateQueue = GameStateQueue.init();
+pub const GameStateSnapshotQueue = std.fifo.LinearFifo(game.GameStateSnapshot, .{ .Static = 2048 });
+pub var game_state_queue: GameStateSnapshotQueue = GameStateSnapshotQueue.init();
 
 pub var active = false;
 
 pub fn run() !void {
     _ = try std.Thread.spawn(.{}, run_network, .{ &game_state_buffer, &game_state_queue, &active });
-    try game.run_game(
+    var game_state = game.GameState{ .server = false };
+    try game_state.run_game(
         &game_state_buffer,
         &server_message_queue,
         &game_state_queue,
@@ -37,7 +38,7 @@ pub fn run() !void {
     );
 }
 
-fn run_network(game_state_ptr: *game.GameStateSnapshot, game_state_queue_ptr: *GameStateQueue, active_ptr: *bool) !void {
+fn run_network(game_state_ptr: *game.GameStateSnapshot, game_state_queue_ptr: *GameStateSnapshotQueue, active_ptr: *bool) !void {
     var result: i32 = 0;
 
     _ = try std.os.windows.WSAStartup(2, 2);

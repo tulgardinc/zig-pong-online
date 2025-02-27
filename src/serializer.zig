@@ -134,8 +134,8 @@ fn deserialize_numeric(data: []const u8, target_field: anytype) void {
             target_field.* = @bitCast(deserialize_endian(int_rep.*));
         },
         .int => {
-            const int: *const child_type = @alignCast(@ptrCast(data.ptr));
-            target_field.* = @bitCast(deserialize_endian(int.*));
+            const int_ptr = std.mem.bytesAsValue(child_type, data.ptr);
+            target_field.* = @bitCast(deserialize_endian(int_ptr.*));
         },
         else => @compileError("Field type not supported"),
     }
