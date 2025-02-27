@@ -29,12 +29,13 @@ pub const PLAYER_2_STARTING_POSITION = r.Vector2{
 pub const initial_ball = Ball{
     .dir = .{ .x = -0.5, .y = -0.5 },
     .pos = .{ .x = 0, .y = 0 },
-    .size = 35,
+    .size = Ball.BALL_SIZE,
     .speed = Ball.BALL_SPEED,
 };
 
 pub const GameStateSnapshot = struct {
     player_pos: r.Vector2,
+    other_player_pos: r.Vector2,
     ball_dir: r.Vector2,
     ball_pos: r.Vector2,
     input: i2,
@@ -60,7 +61,7 @@ pub fn run_game(
 
     var player = Player{
         .pos = PLAYER_1_STARTING_POSITION,
-        .vel = r.Vector2Zero(),
+        .player_type = 1,
     };
 
     var other_player = OtherPlayer{
@@ -110,14 +111,21 @@ pub fn run_game(
             }
 
             player.pos = server_message.player_pos;
-            server_ball_position = server_message.ball_pos;
+            var simulation_ball = Ball{
+                .dir = server_message.ball_dir,
+                .pos = server_message.ball_pos,
+                .size = Ball.BALL_SIZE,
+                .speed = Ball.BALL_SPEED,
+            };
             for (game_state_queue_ptr.readableSlice(0)) |*snapshot_ptr| {
-                const input_float: f32 = @floatFromInt(snapshot_ptr.input);
-                const player_vel = r.Vector2Scale(consts.VEC_UP, input_float * (server.TICK_DURATION_S));
-                player.pos = r.Vector2Add(player.pos, player_vel);
-                const ball_vel = r.Vector2Scale(snapshot_ptr.ball_dir, Ball.BALL_SPEED * server.TICK_DURATION_S);
-                server_ball_position = r.Vector2Add(server_ball_position, ball_vel);
+                const other_player_pos = snapshot_ptr.other_player_pos;
+                player.update(snapshot_ptr.input, server.TICK_DURATION_S);
+
+                const player_aabb = AABB.init(&player.pos, Player.PLAYER_WIDTH, Player.PLAYER_LENGTH);
+                const player_other_aabb = AABB.init(&other_player_pos, Player.PLAYER_WIDTH, Player.PLAYER_LENGTH);
+                simulation_ball.update(.{ &player_aabb, &player_other_aabb }, server.TICK_DURATION_S);
             }
+            server_ball_position = simulation_ball.pos;
         }
 
         if (active_ptr.*) {
@@ -126,7 +134,9 @@ pub fn run_game(
 
             const collisions = [_]*const AABB{ &player_aabb, &other_player_aabb };
 
-            player.update(game_state_buffer_ptr);
+            const input: i2 = if (r.IsKeyDown(r.KEY_D)) 1 else if (r.IsKeyDown(r.KEY_A)) -1 else 0;
+
+            player.update(input, r.GetFrameTime());
 
             if (server_other_player_position) |other_pos| {
                 other_player.pos = r.Vector2MoveTowards(
@@ -143,7 +153,7 @@ pub fn run_game(
                 ball.pos = r.Vector2MoveTowards(
                     ball.pos,
                     server_ball_position,
-                    std.math.pow(f32, ball_dist, 2) * r.GetFrameTime(),
+                    std.math.pow(f32, ball_dist, 1.5) * r.GetFrameTime(),
                 );
             }
 
@@ -151,6 +161,7 @@ pub fn run_game(
             game_state_buffer_ptr.ball_pos = ball.pos;
             game_state_buffer_ptr.ball_dir = ball.dir;
             game_state_buffer_ptr.player_pos = player.pos;
+            game_state_buffer_ptr.input = input;
         }
 
         r.BeginDrawing();

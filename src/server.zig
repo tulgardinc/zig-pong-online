@@ -19,6 +19,12 @@ const ClientMessageWrapper = struct {
     message: protocol.ClientMessage,
 };
 
+// TODO: REPLACE ALL OTHERPLAYER WITH PLAYER
+// TODO: ADD SCORE
+// TODO: ADD RESET AFTER GOAL
+// TODO: ADD UI OPTION TO HOST OR JOIN
+// TODO: SPAWN SERVER AS SEPEARTE PROCESS
+
 const ClientMessageQueue = std.fifo.LinearFifo(ClientMessageWrapper, .{ .Static = 2048 });
 
 pub fn run() !void {
