@@ -5,24 +5,41 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe_mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+    const server_exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/server_main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const exe = b.addExecutable(.{
-        .name = "zig14test",
-        .root_module = exe_mod,
+    const client_exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/client_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const server_exe = b.addExecutable(.{
+        .name = "pongserver",
+        .root_module = server_exe_mod,
+    });
+
+    const client_exe = b.addExecutable(.{
+        .name = "pong",
+        .root_module = client_exe_mod,
     });
 
     const raylib_dep = b.dependency("raylib", .{ .target = target, .optimize = optimize });
     const raylib = raylib_dep.artifact("raylib");
 
-    exe.linkLibrary(raylib);
-    b.installArtifact(exe);
+    server_exe.linkLibrary(raylib);
+    b.installArtifact(server_exe);
 
-    const run_cmd = b.addRunArtifact(exe);
+    client_exe.linkLibrary(raylib);
+    if (target.result.os.tag == .windows) {
+        client_exe.subsystem = .Windows;
+    }
+    b.installArtifact(client_exe);
+
+    const run_cmd = b.addRunArtifact(client_exe);
 
     run_cmd.step.dependOn(b.getInstallStep());
 

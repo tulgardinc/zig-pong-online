@@ -9,8 +9,9 @@ const Player = @import("Player.zig");
 const client = @import("../client.zig");
 const consts = @import("constants.zig");
 const server = @import("../server.zig");
-
 const protocol = @import("../protocol.zig");
+const Button = @import("Button.zig");
+const Input = @import("Input.zig");
 
 pub const SCREEN_WIDTH = 890;
 pub const SCREEN_HEIGHT = 500;
@@ -25,6 +26,24 @@ pub const GameScore = struct {
     player1_score: u16 = 0,
     player2_score: u16 = 0,
 };
+
+fn join_pressed(state_ptr: *GameState) void {
+    std.debug.print("ip: {s}, port: {s}\n", .{ state_ptr.ip_input_host, state_ptr.port_input_host });
+    _ = std.Thread.spawn(.{}, client.run_network, .{ &state_ptr.ip_input_host, &state_ptr.port_input_host, state_ptr }) catch @panic("couldn't start thread");
+}
+
+fn host_pressed(state_ptr: *GameState) void {
+    std.debug.print("button pressed\n", .{});
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fs.selfExeDirPath(&path_buffer) catch @panic("couldn't find exe dir");
+    const exe_name = "pongserver.exe";
+    @memcpy(path_buffer[path.len .. path.len + exe_name.len + 1], "/" ++ exe_name);
+    state_ptr.server_process = std.process.Child.init(&.{ path_buffer[0 .. path.len + exe_name.len + 1], &state_ptr.port_input_join }, state_ptr.alloc.?);
+    state_ptr.server_process.?.spawn() catch @panic("failed to spawn server");
+    _ = std.Thread.spawn(.{}, client.run_network, .{ "127.0.0.1", &state_ptr.port_input_join, state_ptr }) catch @panic("couldn't start thread");
+}
+
+pub const Scenes = enum { Menu, Game, Waiting };
 
 pub const GameState = struct {
     server: bool,
@@ -51,17 +70,36 @@ pub const GameState = struct {
             .size = Ball.SIZE,
             .speed = Ball.INITIAL_SPEED,
         },
+        player: Player = .{
+            .player_type = 0,
+            .pos = r.Vector2Zero(),
+        },
     } = .{},
     positions_set: bool = false,
     game_score: GameScore = GameScore{},
+    camera: r.Camera2D = .{
+        .offset = .{
+            .x = @divFloor(SCREEN_WIDTH, 2),
+            .y = @divFloor(SCREEN_HEIGHT, 2),
+        },
+        .rotation = 0,
+        .target = .{ .x = 0, .y = 0 },
+        .zoom = 1.0,
+    },
+    ip_input_host: [16:0]u8 = undefined,
+    port_input_join: [6:0]u8 = undefined,
+    port_input_host: [6:0]u8 = undefined,
+    current_scene: Scenes = .Menu,
+    alloc: ?std.mem.Allocator = null,
+    server_process: ?std.process.Child = null,
 
     pub fn get_random_dir(self: *GameState) r.Vector2 {
         const x_factor: f32 = if (self.rand.?.boolean()) 1.0 else -1.0;
         const y_factor: f32 = if (self.rand.?.boolean()) 1.0 else -1.0;
         return r.Vector2Normalize(
             r.Vector2{
-                .x = (self.rand.?.float(f32) * 0.6 + 0.2) * x_factor,
-                .y = (self.rand.?.float(f32) * 0.6 + 0.2) * y_factor,
+                .x = (self.rand.?.float(f32) * 1.0 + 0.1) * x_factor,
+                .y = (self.rand.?.float(f32) * 0.6 + 0.1) * y_factor,
             },
         );
     }
@@ -92,28 +130,75 @@ pub const GameState = struct {
         game_state_buffer_ptr: *GameStateSnapshot,
         server_message_queue_ptr: *client.ServerMessageQueue,
         game_state_queue_ptr: *client.GameStateSnapshotQueue,
-        active_ptr: *bool,
     ) !void {
         var player1_score_buffer: [5]u8 = .{0} ** 5;
         var player2_score_buffer: [5]u8 = .{0} ** 5;
 
+        var selected_input: ?u8 = null;
+
+        var port_input_field_host = Input{
+            .current_selection = &selected_input,
+            .key = 2,
+            .rectangle = r.Rectangle{
+                .height = 50,
+                .width = 250,
+                .x = -130,
+                .y = -100,
+            },
+        };
+
+        var host_button = Button{
+            .on_click = &host_pressed,
+            .rectangle = r.Rectangle{
+                .height = 50,
+                .width = 200,
+                .x = 35,
+                .y = 100,
+            },
+            .text = "Host",
+        };
+
+        var ip_input_field = Input{
+            .current_selection = &selected_input,
+            .key = 0,
+            .rectangle = r.Rectangle{
+                .height = 50,
+                .width = 250,
+                .x = -400,
+                .y = -100,
+            },
+        };
+
+        var join_button = Button{
+            .on_click = &join_pressed,
+            .rectangle = r.Rectangle{
+                .height = 50,
+                .width = 200,
+                .x = 140,
+                .y = -100,
+            },
+            .text = "Join",
+        };
+
+        var port_input_field_join = Input{
+            .current_selection = &selected_input,
+            .key = 1,
+            .rectangle = r.Rectangle{
+                .height = 50,
+                .width = 250,
+                .x = -235,
+                .y = 100,
+            },
+        };
+
         r.SetTraceLogLevel(r.LOG_ERROR);
         r.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Pong");
         defer r.CloseWindow();
-        const camera = r.Camera2D{
-            .offset = .{
-                .x = @divFloor(SCREEN_WIDTH, 2),
-                .y = @divFloor(SCREEN_HEIGHT, 2),
-            },
-            .rotation = 0,
-            .target = .{ .x = 0, .y = 0 },
-            .zoom = 1.0,
-        };
 
         r.SetTargetFPS(166);
 
         while (!r.WindowShouldClose()) {
-            if (server_message_queue_ptr.readableLength() > 0 and game_state_queue_ptr.readableLength() > 0) {
+            if (server_message_queue_ptr.readableLength() > 0) {
 
                 // handle positioning and correction
                 const server_message = server_message_queue_ptr.readItem().?;
@@ -127,6 +212,13 @@ pub const GameState = struct {
                     }
                     self.positions_set = true;
                     std.debug.print("player: {}\n", .{self.player.player_type});
+
+                    self.current_scene = .Waiting;
+                    continue;
+                }
+
+                if (self.current_scene != .Game and server_message.started == 1) {
+                    self.current_scene = .Game;
                 }
 
                 // entity interpolation
@@ -140,15 +232,15 @@ pub const GameState = struct {
                     }
                 }
 
-                self.player.pos = server_message.player_pos;
                 self.server_info.ball.pos = server_message.ball_pos;
                 self.ball.dir = server_message.ball_dir;
                 self.ball.speed = server_message.ball_speed;
                 self.game_score.player1_score = server_message.player1_score;
                 self.game_score.player2_score = server_message.player2_score;
+                self.server_info.player.pos = server_message.player_pos;
                 for (game_state_queue_ptr.readableSlice(0)) |*snapshot_ptr| {
                     const other_player_pos = snapshot_ptr.other_player_pos;
-                    self.player.update(snapshot_ptr.input, server.TICK_DURATION_S);
+                    self.server_info.player.update(snapshot_ptr.input, server.TICK_DURATION_S);
 
                     const player_aabb = AABB.init(&self.player.pos, Player.PLAYER_WIDTH, Player.PLAYER_LENGTH);
                     const player_other_aabb = AABB.init(&other_player_pos, Player.PLAYER_WIDTH, Player.PLAYER_LENGTH);
@@ -158,7 +250,7 @@ pub const GameState = struct {
                 self.ball.speed = server_message.ball_speed;
             }
 
-            if (active_ptr.*) {
+            if (self.current_scene == .Game) {
                 const player_aabb = AABB.init(&self.player.pos, Player.PLAYER_WIDTH, Player.PLAYER_LENGTH);
                 const other_player_aabb = AABB.init(&self.other_player.pos, Player.PLAYER_WIDTH, Player.PLAYER_LENGTH);
 
@@ -167,6 +259,15 @@ pub const GameState = struct {
                 const input: i2 = if (r.IsKeyDown(r.KEY_D)) 1 else if (r.IsKeyDown(r.KEY_A)) -1 else 0;
 
                 self.player.update(input, r.GetFrameTime());
+
+                const player_dist = r.Vector2Distance(self.player.pos, self.server_info.player.pos);
+                if (player_dist > 0.05) {
+                    self.player.pos = r.Vector2MoveTowards(
+                        self.player.pos,
+                        self.server_info.player.pos,
+                        std.math.pow(f32, player_dist, 1.5) * r.GetFrameTime(),
+                    );
+                }
 
                 if (self.server_info.other_player_pos) |other_pos| {
                     self.other_player.pos = r.Vector2MoveTowards(
@@ -195,49 +296,169 @@ pub const GameState = struct {
 
             r.ClearBackground(r.BLACK);
 
-            r.BeginMode2D(camera);
+            r.BeginMode2D(self.camera);
 
-            r.DrawRectangle(
-                @intFromFloat(self.player.pos.x),
-                @intFromFloat(self.player.pos.y),
-                Player.PLAYER_WIDTH,
-                Player.PLAYER_LENGTH,
-                r.RAYWHITE,
-            );
+            switch (self.current_scene) {
+                .Game => {
+                    // Render the game
 
-            r.DrawRectangle(
-                @intFromFloat(self.other_player.pos.x),
-                @intFromFloat(self.other_player.pos.y),
-                Player.PLAYER_WIDTH,
-                Player.PLAYER_LENGTH,
-                r.RAYWHITE,
-            );
+                    r.DrawRectangle(
+                        @intFromFloat(self.player.pos.x),
+                        @intFromFloat(self.player.pos.y),
+                        Player.PLAYER_WIDTH,
+                        Player.PLAYER_LENGTH,
+                        r.RAYWHITE,
+                    );
 
-            r.DrawRectangle(
-                @intFromFloat(self.ball.pos.x),
-                @intFromFloat(self.ball.pos.y),
-                @intFromFloat(self.ball.size),
-                @intFromFloat(self.ball.size),
-                r.RAYWHITE,
-            );
+                    r.DrawRectangle(
+                        @intFromFloat(self.other_player.pos.x),
+                        @intFromFloat(self.other_player.pos.y),
+                        Player.PLAYER_WIDTH,
+                        Player.PLAYER_LENGTH,
+                        r.RAYWHITE,
+                    );
 
-            r.DrawRectangle(
-                -2,
-                -SCREEN_HEIGHT / 2,
-                4,
-                SCREEN_HEIGHT,
-                r.RAYWHITE,
-            );
+                    r.DrawRectangle(
+                        @intFromFloat(self.ball.pos.x),
+                        @intFromFloat(self.ball.pos.y),
+                        @intFromFloat(self.ball.size),
+                        @intFromFloat(self.ball.size),
+                        r.RAYWHITE,
+                    );
 
-            const p1_score_str = try std.fmt.bufPrint(player1_score_buffer[0..], "{}", .{self.game_score.player1_score});
-            r.DrawText(@ptrCast(p1_score_str), 15, -(SCREEN_HEIGHT / 2) + 5, 40, r.RAYWHITE);
+                    r.DrawRectangle(
+                        -2,
+                        -SCREEN_HEIGHT / 2,
+                        4,
+                        SCREEN_HEIGHT,
+                        r.RAYWHITE,
+                    );
 
-            const p2_score_str = try std.fmt.bufPrint(player2_score_buffer[0..], "{}", .{self.game_score.player2_score});
-            const text_width = r.MeasureText(@ptrCast(p2_score_str), 40);
-            r.DrawText(@ptrCast(p2_score_str), -15 - text_width, -(SCREEN_HEIGHT / 2) + 5, 40, r.RAYWHITE);
+                    const p1_score_str = try std.fmt.bufPrint(player1_score_buffer[0..], "{}", .{self.game_score.player1_score});
+                    r.DrawText(@ptrCast(p1_score_str), 15, -(SCREEN_HEIGHT / 2) + 5, 40, r.RAYWHITE);
+
+                    const p2_score_str = try std.fmt.bufPrint(player2_score_buffer[0..], "{}", .{self.game_score.player2_score});
+                    const text_width = r.MeasureText(@ptrCast(p2_score_str), 40);
+                    r.DrawText(@ptrCast(p2_score_str), -15 - text_width, -(SCREEN_HEIGHT / 2) + 5, 40, r.RAYWHITE);
+                },
+                .Menu => {
+                    r.DrawRectangle(
+                        Player.PLAYER_1_STARTING_POSITION.x,
+                        Player.PLAYER_1_STARTING_POSITION.y,
+                        Player.PLAYER_WIDTH,
+                        Player.PLAYER_LENGTH,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        Player.PLAYER_2_STARTING_POSITION.x,
+                        Player.PLAYER_2_STARTING_POSITION.y,
+                        Player.PLAYER_WIDTH,
+                        Player.PLAYER_LENGTH,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        Ball.INITIAL_POSITION.x,
+                        Ball.INITIAL_POSITION.y,
+                        Ball.SIZE,
+                        Ball.SIZE,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        -2,
+                        -SCREEN_HEIGHT / 2,
+                        4,
+                        SCREEN_HEIGHT,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        -SCREEN_WIDTH / 2,
+                        -SCREEN_HEIGHT / 2,
+                        SCREEN_WIDTH,
+                        SCREEN_HEIGHT,
+                        r.ColorAlpha(
+                            r.BLACK,
+                            0.8,
+                        ),
+                    );
+
+                    r.DrawRectangleRounded(
+                        r.Rectangle{
+                            .x = -SCREEN_WIDTH / 2 + 25,
+                            .y = -2,
+                            .width = SCREEN_WIDTH - 50,
+                            .height = 2,
+                        },
+                        0.5,
+                        5,
+                        r.RAYWHITE,
+                    );
+
+                    host_button.update(self);
+                    join_button.update(self);
+                    ip_input_field.update(&self.ip_input_host, self);
+                    port_input_field_join.update(&self.port_input_join, self);
+                    port_input_field_host.update(&self.port_input_host, self);
+                },
+                .Waiting => {
+                    r.DrawRectangle(
+                        Player.PLAYER_1_STARTING_POSITION.x,
+                        Player.PLAYER_1_STARTING_POSITION.y,
+                        Player.PLAYER_WIDTH,
+                        Player.PLAYER_LENGTH,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        Player.PLAYER_2_STARTING_POSITION.x,
+                        Player.PLAYER_2_STARTING_POSITION.y,
+                        Player.PLAYER_WIDTH,
+                        Player.PLAYER_LENGTH,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        Ball.INITIAL_POSITION.x,
+                        Ball.INITIAL_POSITION.y,
+                        Ball.SIZE,
+                        Ball.SIZE,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        -2,
+                        -SCREEN_HEIGHT / 2,
+                        4,
+                        SCREEN_HEIGHT,
+                        r.RAYWHITE,
+                    );
+
+                    r.DrawRectangle(
+                        -SCREEN_WIDTH / 2,
+                        -SCREEN_HEIGHT / 2,
+                        SCREEN_WIDTH,
+                        SCREEN_HEIGHT,
+                        r.ColorAlpha(
+                            r.BLACK,
+                            0.8,
+                        ),
+                    );
+
+                    const text = "Waiting for Player 2";
+                    const text_width = r.MeasureText(text, 50);
+                    r.DrawText(text, @divFloor(-text_width, 2), -25, 50, r.RAYWHITE);
+                },
+            }
 
             r.EndMode2D();
             r.EndDrawing();
+        }
+
+        if (self.server_process) |*process| {
+            _ = try process.kill();
         }
     }
 };

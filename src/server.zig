@@ -11,7 +11,6 @@ const r = @cImport({
     @cInclude("raymath.h");
 });
 
-pub const SERVER_PORT = 12345;
 const BUFF_SIZE = 4096;
 
 const SERVER_TICK_RATE = 60;
@@ -28,16 +27,9 @@ const PlayerWrapper = struct {
     player: *Player,
 };
 
-// DONE: REPLACE ALL OTHERPLAYER WITH PLAYER
-// DONE: ADD SCORE
-// DONE: ADD RESET AFTER GOAL
-// DONE: RANDOM BALL SPAWN
-// TODO: ADD UI OPTION TO HOST OR JOIN
-// TODO: SPAWN SERVER AS SEPEARTE PROCESS
-
 const ClientMessageQueue = std.fifo.LinearFifo(ClientMessageWrapper, .{ .Static = 2048 });
 
-pub fn run() !void {
+pub fn run(port: [:0]const u8) !void {
     var buffer: [BUFF_SIZE]u8 = undefined;
     var result: i32 = 0;
 
@@ -73,7 +65,7 @@ pub fn run() !void {
 
     const server_addr = ws2_32.sockaddr.in{
         .family = ws2_32.AF.INET,
-        .port = ws2_32.htons(SERVER_PORT),
+        .port = ws2_32.htons(try std.fmt.parseInt(u16, std.mem.sliceTo(port, 0), 10)),
         .addr = 0,
     };
 
@@ -134,11 +126,35 @@ pub fn run() !void {
                     player1.id = incoming_id;
                     std.debug.print("Player 1 connected id {any}\n", .{player1.id});
                     player1_addr = cli_addr;
+
+                    const server_message = serializer.serialize(protocol.ServerMessage{ .player = 0 });
+
+                    result = std.os.windows.sendto(
+                        sockfd,
+                        @ptrCast(&server_message),
+                        @intCast(server_message.len),
+                        0,
+                        &player1_addr,
+                        @intCast(sockaddr_len),
+                    );
+                    // TODO: ERROR CHECK
+
                 } else if (incoming_id != player1.id.?) {
                     if (player2.id == null) {
                         player2.id = incoming_id;
                         std.debug.print("Player 2 connected id {any}\n", .{player2.id});
                         player2_addr = cli_addr;
+
+                        const server_message = serializer.serialize(protocol.ServerMessage{ .player = 1 });
+
+                        result = std.os.windows.sendto(
+                            sockfd,
+                            @ptrCast(&server_message),
+                            @intCast(server_message.len),
+                            0,
+                            &player2_addr,
+                            @intCast(sockaddr_len),
+                        );
                     }
                 }
 
@@ -196,6 +212,7 @@ pub fn run() !void {
             .player = 0,
             .player1_score = game_state.game_score.player1_score,
             .player2_score = game_state.game_score.player2_score,
+            .started = 1,
         };
         const p1_buffer = serializer.serialize(message_to_p1);
 
@@ -209,6 +226,7 @@ pub fn run() !void {
             .player = 1,
             .player1_score = game_state.game_score.player1_score,
             .player2_score = game_state.game_score.player2_score,
+            .started = 1,
         };
         const p2_buffer = serializer.serialize(message_to_p2);
 
@@ -221,7 +239,7 @@ pub fn run() !void {
             @intCast(sockaddr_len),
         );
         if (result == ws2_32.SOCKET_ERROR) {
-            //std.debug.print("sendto failed: {}\n", .{ws2_32.WSAGetLastError()});
+            std.debug.print("player 1 sendto failed: {}\n", .{ws2_32.WSAGetLastError()});
             continue;
         }
 
@@ -234,7 +252,7 @@ pub fn run() !void {
             @intCast(sockaddr_len),
         );
         if (result == ws2_32.SOCKET_ERROR) {
-            //std.debug.print("sendto failed: {}\n", .{ws2_32.WSAGetLastError()});
+            std.debug.print("player 2 sendto failed: {}\n", .{ws2_32.WSAGetLastError()});
             continue;
         }
     }
