@@ -30,13 +30,18 @@ pub fn build(b: *std.Build) void {
     const raylib_dep = b.dependency("raylib", .{ .target = target, .optimize = optimize });
     const raylib = raylib_dep.artifact("raylib");
 
+    const serializer_dep = b.dependency("zig-serializer", .{ .target = target, .optimize = optimize });
+    const zig_serializer = serializer_dep.module("zig-serializer");
+
     server_exe.linkLibrary(raylib);
+    server_exe.root_module.addImport("zig-serializer", zig_serializer);
     b.installArtifact(server_exe);
 
     client_exe.linkLibrary(raylib);
-    if (target.result.os.tag == .windows) {
-        client_exe.subsystem = .Windows;
-    }
+    client_exe.root_module.addImport("zig-serializer", zig_serializer);
+    // if (target.result.os.tag == .windows) {
+    //     client_exe.subsystem = .Windows;
+    // }
     b.installArtifact(client_exe);
 
     const run_cmd = b.addRunArtifact(client_exe);

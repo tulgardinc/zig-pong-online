@@ -1,7 +1,7 @@
 const std = @import("std");
 const ws2_32 = std.os.windows.ws2_32;
 const protocol = @import("protocol.zig");
-const serializer = @import("serializer.zig");
+const serializer = @import("zig-serializer");
 const Player = @import("game/Player.zig");
 const game = @import("game/game.zig");
 const AABB = @import("game/AABB.zig");
@@ -11,7 +11,11 @@ const r = @cImport({
     @cInclude("raymath.h");
 });
 
-const BUFF_SIZE = 4096;
+const CLIENT_MESSAGE_BUFFER_SIZE = std.math.ceilPowerOfTwo(u32, protocol.CLIENT_MESSAGE_SIZE) catch @panic("buffer too large");
+var client_message_buffer: [CLIENT_MESSAGE_BUFFER_SIZE]u8 = undefined;
+
+const SERVER_MESSAGE_BUFFER_SIZE = std.math.ceilPowerOfTwo(u32, protocol.SERVER_MESSAGE_SIZE) catch @panic("buffer too large");
+var server_message_buffer: [SERVER_MESSAGE_BUFFER_SIZE]u8 = undefined;
 
 const SERVER_TICK_RATE = 60;
 pub const TICK_DURATION_MCS: i64 = 1000000 / SERVER_TICK_RATE;
@@ -30,7 +34,6 @@ const PlayerWrapper = struct {
 const ClientMessageQueue = std.fifo.LinearFifo(ClientMessageWrapper, .{ .Static = 2048 });
 
 pub fn run(port: [:0]const u8) !void {
-    var buffer: [BUFF_SIZE]u8 = undefined;
     var result: i32 = 0;
 
     var random_engine = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
@@ -105,8 +108,8 @@ pub fn run(port: [:0]const u8) !void {
             if (socket_activity > 0) {
                 const bytes_recv = std.os.windows.recvfrom(
                     sockfd,
-                    @ptrCast(&buffer),
-                    BUFF_SIZE,
+                    @ptrCast(&client_message_buffer),
+                    CLIENT_MESSAGE_BUFFER_SIZE,
                     0,
                     &cli_addr,
                     &sockaddr_len,
@@ -117,7 +120,7 @@ pub fn run(port: [:0]const u8) !void {
                 }
 
                 var client_message: protocol.ClientMessage = undefined;
-                serializer.deserialize(&client_message, &buffer);
+                protocol.Serializer.deserialize(protocol.ClientMessage, &client_message, &client_message_buffer);
 
                 const cli_casted: ws2_32.sockaddr.in = @bitCast(cli_addr);
 
@@ -127,12 +130,16 @@ pub fn run(port: [:0]const u8) !void {
                     std.debug.print("Player 1 connected id {any}\n", .{player1.id});
                     player1_addr = cli_addr;
 
-                    const server_message = serializer.serialize(protocol.ServerMessage{ .player = 0 });
+                    protocol.Serializer.serialize(
+                        protocol.ServerMessage,
+                        &server_message_buffer,
+                        &protocol.ServerMessage{ .player = 0 },
+                    );
 
                     result = std.os.windows.sendto(
                         sockfd,
-                        @ptrCast(&server_message),
-                        @intCast(server_message.len),
+                        @ptrCast(&server_message_buffer),
+                        @intCast(serializer.get_serialization_array_size(protocol.ServerMessage)),
                         0,
                         &player1_addr,
                         @intCast(sockaddr_len),
@@ -145,12 +152,16 @@ pub fn run(port: [:0]const u8) !void {
                         std.debug.print("Player 2 connected id {any}\n", .{player2.id});
                         player2_addr = cli_addr;
 
-                        const server_message = serializer.serialize(protocol.ServerMessage{ .player = 1 });
+                        protocol.Serializer.serialize(
+                            protocol.ServerMessage,
+                            &server_message_buffer,
+                            &protocol.ServerMessage{ .player = 1 },
+                        );
 
                         result = std.os.windows.sendto(
                             sockfd,
-                            @ptrCast(&server_message),
-                            @intCast(server_message.len),
+                            @ptrCast(&server_message_buffer),
+                            @intCast(serializer.get_serialization_array_size(protocol.ServerMessage)),
                             0,
                             &player2_addr,
                             @intCast(sockaddr_len),
@@ -214,7 +225,20 @@ pub fn run(port: [:0]const u8) !void {
             .player2_score = game_state.game_score.player2_score,
             .started = 1,
         };
-        const p1_buffer = serializer.serialize(message_to_p1);
+        protocol.Serializer.serialize(protocol.ServerMessage, &server_message_buffer, &message_to_p1);
+
+        result = std.os.windows.sendto(
+            sockfd,
+            @ptrCast(&server_message_buffer),
+            @intCast(serializer.get_serialization_array_size(protocol.ServerMessage)),
+            0,
+            &player1_addr,
+            @intCast(sockaddr_len),
+        );
+        if (result == ws2_32.SOCKET_ERROR) {
+            std.debug.print("player 1 sendto failed: {}\n", .{ws2_32.WSAGetLastError()});
+            continue;
+        }
 
         const message_to_p2 = protocol.ServerMessage{
             .ball_pos = game_state.ball.pos,
@@ -228,25 +252,12 @@ pub fn run(port: [:0]const u8) !void {
             .player2_score = game_state.game_score.player2_score,
             .started = 1,
         };
-        const p2_buffer = serializer.serialize(message_to_p2);
+        protocol.Serializer.serialize(protocol.ServerMessage, &server_message_buffer, &message_to_p2);
 
         result = std.os.windows.sendto(
             sockfd,
-            @ptrCast(&p1_buffer),
-            @intCast(p1_buffer.len),
-            0,
-            &player1_addr,
-            @intCast(sockaddr_len),
-        );
-        if (result == ws2_32.SOCKET_ERROR) {
-            std.debug.print("player 1 sendto failed: {}\n", .{ws2_32.WSAGetLastError()});
-            continue;
-        }
-
-        result = std.os.windows.sendto(
-            sockfd,
-            @ptrCast(&p2_buffer),
-            @intCast(p2_buffer.len),
+            @ptrCast(&server_message_buffer),
+            @intCast(serializer.get_serialization_array_size(protocol.ServerMessage)),
             0,
             &player2_addr,
             @intCast(sockaddr_len),

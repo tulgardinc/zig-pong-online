@@ -1,21 +1,23 @@
 const std = @import("std");
 const server = @import("server.zig");
 const protocol = @import("protocol.zig");
-const serializer = @import("serializer.zig");
 const game = @import("game/game.zig");
 const r = @cImport({
     @cInclude("raylib.h");
     @cInclude("raymath.h");
 });
+const serializer = @import("zig-serializer");
 
 const ws2_32 = std.os.windows.ws2_32;
 
 const CLIENT_TICK_RATE = 60;
 const TICK_TIME_MCS: i64 = 1000000 / CLIENT_TICK_RATE;
 
-var buffer: [BUFF_SIZE]u8 = undefined;
+const server_message_buffer_size = std.math.ceilPowerOfTwo(u32, serializer.get_serialization_array_size(protocol.ServerMessage)) catch @panic("buffer too large");
+var server_message_buffer: [server_message_buffer_size]u8 = undefined;
 
-const BUFF_SIZE = 4096;
+const client_mesage_buffer_size = std.math.ceilPowerOfTwo(u32, serializer.get_serialization_array_size(protocol.ClientMessage)) catch @panic("buffer too large");
+var client_message_buffer: [client_mesage_buffer_size]u8 = undefined;
 
 pub var game_state_buffer: game.GameStateSnapshot = undefined;
 
@@ -81,14 +83,14 @@ pub fn run_network(
             fd_set.fd_count = 1;
             const socket_activity = ws2_32.select(0, &fd_set, null, null, &.{ .sec = 0, .usec = @intCast(select_timeout) });
             if (socket_activity > 0) {
-                result = ws2_32.recv(socketfd, @ptrCast(&buffer), @intCast(BUFF_SIZE), 0);
+                result = ws2_32.recv(socketfd, @ptrCast(&server_message_buffer), @intCast(server_message_buffer_size), 0);
                 if (result == ws2_32.SOCKET_ERROR) {
                     std.debug.print("failed recv: {}\n", .{ws2_32.WSAGetLastError()});
                     continue;
                 }
 
                 var server_message: protocol.ServerMessage = undefined;
-                serializer.deserialize(&server_message, buffer[0..@intCast(result)]);
+                protocol.Serializer.deserialize(protocol.ServerMessage, &server_message, server_message_buffer[0..@intCast(result)]);
 
                 try server_message_queue.writeItem(server_message);
 
@@ -106,12 +108,12 @@ pub fn run_network(
 
         message.input = game_state_snapshot.input;
         message.stamp = game_state_snapshot.stamp;
-        const client_message_serialized = serializer.serialize(&message);
+        protocol.Serializer.serialize(protocol.ClientMessage, &client_message_buffer, &message);
 
         result = ws2_32.sendto(
             socketfd,
-            @ptrCast(&client_message_serialized),
-            @intCast(client_message_serialized.len),
+            @ptrCast(&client_message_buffer),
+            @intCast(serializer.get_serialization_array_size(protocol.ClientMessage)),
             0,
             @ptrCast(&server_addr),
             @sizeOf(ws2_32.sockaddr.in),
