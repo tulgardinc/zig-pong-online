@@ -66,7 +66,7 @@ pub fn run(port: [:0]const u8) !void {
     const server_addr = ws2_32.sockaddr.in{
         .family = ws2_32.AF.INET,
         .port = ws2_32.htons(try std.fmt.parseInt(u16, std.mem.sliceTo(port, 0), 10)),
-        .addr = 0,
+        .addr = ws2_32.inet_addr("0.0.0.0"),
     };
 
     result = ws2_32.bind(sockfd, @ptrCast(&server_addr), @sizeOf(ws2_32.sockaddr.in));
