@@ -39,9 +39,9 @@ pub fn build(b: *std.Build) void {
 
     client_exe.linkLibrary(raylib);
     client_exe.root_module.addImport("zig-serializer", zig_serializer);
-    // if (target.result.os.tag == .windows) {
-    //     client_exe.subsystem = .Windows;
-    // }
+    if (target.result.os.tag == .windows) {
+        client_exe.subsystem = .Windows;
+    }
     b.installArtifact(client_exe);
 
     const run_cmd = b.addRunArtifact(client_exe);
